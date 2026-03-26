@@ -40,7 +40,8 @@ const state = {
     otherLastActiveAt: null,
     presenceLastSent: null,
     presenceDebounceTimer: null,
-    bannerTimer: null
+    bannerTimer: null,
+    presenceTickerTimer: null
 };
 
 // ==================== DOM ELEMENTS ====================
@@ -280,7 +281,7 @@ const ui = {
                 <span class="message-status">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <polyline points="20 6 9 17 4 12"></polyline>
-                        <polyline points="22 8 11 19 6 14"></polyline>
+                        <polyline points="21 7 10 18 5 13"></polyline>
                     </svg>
                 </span>` : ''}
                 <span class="message-time">${utils.time(msg.createdAt)}</span>
@@ -347,11 +348,14 @@ const handlers = {
         DOM.replyBar?.classList.add('hidden');
         state.messageMap.clear();
         if (state.eventSource) state.eventSource.close();
+        handlers.stopPresenceTicker();
         ui.switchScreen(false);
     },
 
     getMyActive() {
-        return document.visibilityState === 'visible' && document.hasFocus();
+        // Presence is based on whether the tab is visible.
+        // Some mobile browsers may not reliably support `hasFocus()`.
+        return document.visibilityState === 'visible';
     },
 
     sendPresence(active) {
@@ -373,15 +377,29 @@ const handlers = {
         // Debounce to avoid spamming server during rapid visibility changes.
         if (state.presenceDebounceTimer) clearTimeout(state.presenceDebounceTimer);
         state.presenceDebounceTimer = setTimeout(async () => {
-            if (state.user && handlers.getMyActive() === active) {
+            if (state.user && handlers.getMyActive() === active && state.presenceLastSent !== active) {
                 try {
-                    await api.setPresence(active);
+                    handlers.sendPresence(active);
                 } catch {
                     // Best-effort; presence is a UI hint, not critical.
                 }
                 state.presenceLastSent = active;
             }
         }, 250);
+    },
+
+    startPresenceTicker() {
+        if (state.presenceTickerTimer) clearInterval(state.presenceTickerTimer);
+        // Keep presence updated while user is active.
+        state.presenceTickerTimer = setInterval(() => {
+            if (!state.user) return;
+            handlers.syncPresence();
+        }, 20000);
+    },
+
+    stopPresenceTicker() {
+        if (state.presenceTickerTimer) clearInterval(state.presenceTickerTimer);
+        state.presenceTickerTimer = null;
     },
 
     handlePresenceUpdate(payload) {
@@ -736,6 +754,7 @@ const init = {
         notify.init();
         ui.updatePresence(false, null);
         handlers.syncPresence();
+        handlers.startPresenceTicker();
         
         const { messages } = await api.getMessages();
         ui.renderMessages(messages);

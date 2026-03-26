@@ -422,6 +422,20 @@ app.get("/api/events", requireAuth, (req, res) => {
   });
 });
 
+const PRESENCE_TTL_MS = Number(process.env.PRESENCE_TTL_MS || 60000);
+// If a client stops sending presence updates (tab suspended, browser throttling, etc.),
+// mark them offline after TTL to keep the UI accurate.
+setInterval(() => {
+  const now = Date.now();
+  for (const [username, data] of presence.entries()) {
+    if (!data?.active) continue;
+    if (now - data.lastActiveAt > PRESENCE_TTL_MS) {
+      presence.set(username, { active: false, lastActiveAt: data.lastActiveAt });
+      broadcast("presence:update", { username, active: false, lastActiveAt: data.lastActiveAt });
+    }
+  }
+}, 15000).unref?.();
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
