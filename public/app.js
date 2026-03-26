@@ -43,6 +43,10 @@ const state = {
     readFlushTimer: null,
     otherActive: false,
     otherLastActiveAt: null,
+    otherTyping: false,
+    typingStopTimer: null,
+    typingDebounceTimer: null,
+    lastTypingSentAt: 0,
     presenceLastSent: null,
     presenceDebounceTimer: null,
     bannerTimer: null,
@@ -170,6 +174,7 @@ const api = {
     editText: (id, text) => api.request(`/api/messages/${encodeURIComponent(id)}?username=${encodeURIComponent(state.user)}`, { method: 'PATCH', body: JSON.stringify({ text }) }),
     toggleReaction: (id, emoji) => api.request(`/api/messages/${encodeURIComponent(id)}/reactions?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: JSON.stringify({ emoji }) }),
     markRead: (ids) => api.request(`/api/messages/read?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: JSON.stringify({ ids }) }),
+    setTyping: (typing) => api.request(`/api/typing?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: JSON.stringify({ typing }) }),
     async uploadMedia(formData) {
         const res = await fetch(`/api/media?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: formData, credentials: 'same-origin' });
         if (!res.ok) {
@@ -384,7 +389,14 @@ const ui = {
         }
 
         if (DOM.presenceText) {
-            DOM.presenceText.textContent = state.otherActive ? 'آنلاین' : 'آفلاین';
+            DOM.presenceText.textContent = state.otherTyping ? 'در حال تایپ…' : (state.otherActive ? 'آنلاین' : 'آفلاین');
+        }
+    },
+
+    updateTyping(isTyping) {
+        state.otherTyping = Boolean(isTyping);
+        if (DOM.presenceText) {
+            DOM.presenceText.textContent = state.otherTyping ? 'در حال تایپ…' : (state.otherActive ? 'آنلاین' : 'آفلاین');
         }
     },
 
@@ -569,6 +581,35 @@ const handlers = {
         ui.updatePresence(Boolean(payload.active), payload.lastActiveAt);
     },
 
+    handleTypingUpdate(payload) {
+        if (!payload || payload.username !== state.other) return;
+        ui.updateTyping(Boolean(payload.typing));
+    },
+
+    scheduleTypingStop() {
+        if (state.typingStopTimer) clearTimeout(state.typingStopTimer);
+        state.typingStopTimer = setTimeout(() => {
+            if (!state.user) return;
+            api.setTyping(false).catch(() => {});
+        }, 1800);
+    },
+
+    sendTypingNow(isTyping) {
+        const now = Date.now();
+        if (isTyping && now - state.lastTypingSentAt < 450) return;
+        state.lastTypingSentAt = now;
+        api.setTyping(Boolean(isTyping)).catch(() => {});
+    },
+
+    onLocalTyping() {
+        if (!state.user) return;
+        if (state.typingDebounceTimer) clearTimeout(state.typingDebounceTimer);
+        state.typingDebounceTimer = setTimeout(() => {
+            handlers.sendTypingNow(true);
+            handlers.scheduleTypingStop();
+        }, 120);
+    },
+
     setupReadObserver() {
         handlers.teardownReadObserver();
 
@@ -723,6 +764,7 @@ const handlers = {
                 await api.sendText(text, state.replyTo);
                 utils.banner('ارسال شد');
             }
+            api.setTyping(false).catch(() => {});
             DOM.messageInput.value = '';
             DOM.messageInput.style.height = 'auto';
             ui.toggleSendBtn();
@@ -1048,6 +1090,13 @@ const realtime = {
             } catch {}
         });
 
+        state.eventSource.addEventListener('typing:update', (e) => {
+            try {
+                const payload = JSON.parse(e.data);
+                handlers.handleTypingUpdate(payload);
+            } catch {}
+        });
+
         state.eventSource.addEventListener('message:read', (e) => {
             try {
                 const payload = JSON.parse(e.data);
@@ -1100,6 +1149,7 @@ const init = {
 
         notify.init();
         ui.updatePresence(false, null);
+        ui.updateTyping(false);
         handlers.syncPresence();
         handlers.startPresenceTicker();
         
@@ -1175,6 +1225,7 @@ const init = {
                 DOM.messageInput.value = DOM.messageInput.value.slice(0, CONFIG.MAX_TEXT);
                 utils.toast('حداکثر طول پیام ۲۰۰۰ کاراکتر است');
             }
+            handlers.onLocalTyping();
             ui.toggleSendBtn();
             DOM.messageInput.style.height = 'auto';
             DOM.messageInput.style.height = Math.min(DOM.messageInput.scrollHeight, 120) + 'px';
@@ -1253,11 +1304,13 @@ const init = {
             if (!state.user) return;
             handlers.sendPresence(false);
             handlers.syncPresence();
+            api.setTyping(false).catch(() => {});
         });
 
         window.addEventListener('beforeunload', () => {
             if (!state.user) return;
             handlers.sendPresence(false);
+            api.setTyping(false).catch(() => {});
         });
     },
     

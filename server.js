@@ -44,6 +44,7 @@ const allowedAudioTypes = new Set([
 const sseClients = new Set();
 const sseClientUser = new Map(); // Map<SSE Response, username>
 const presence = new Map(); // Map<username, { active: boolean, lastActiveAt: number }>
+const typing = new Map(); // Map<username, { typing: boolean, updatedAt: number }>
 let messageWriteQueue = Promise.resolve();
 
 async function ensureStorage() {
@@ -255,11 +256,12 @@ function requireAuth(req, res, next) {
   const queryUsernameRaw = typeof req.query?.username === "string" ? req.query.username : "";
   const queryUsername = queryUsernameRaw.trim();
 
+  // Prefer explicit username from query to avoid cookie/session collisions across tabs.
   const username =
-    sessionUsername && ALLOWED_USERS.includes(sessionUsername)
-      ? sessionUsername
-      : ALLOWED_USERS.includes(queryUsername)
-        ? queryUsername
+    ALLOWED_USERS.includes(queryUsername)
+      ? queryUsername
+      : sessionUsername && ALLOWED_USERS.includes(sessionUsername)
+        ? sessionUsername
         : null;
 
   if (!username) {
@@ -534,6 +536,15 @@ app.post("/api/messages/read", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/typing", requireAuth, async (req, res) => {
+  const isTyping = Boolean(req.body?.typing);
+  const username = req.authUsername;
+  const next = { typing: isTyping, updatedAt: Date.now() };
+  typing.set(username, next);
+  broadcast("typing:update", { username, ...next });
+  res.json({ ok: true });
+});
+
 app.get("/api/events", requireAuth, (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -561,6 +572,17 @@ app.get("/api/events", requireAuth, (req, res) => {
         username,
         active: Boolean(data?.active),
         lastActiveAt: data?.lastActiveAt || Date.now(),
+      })}\n\n`
+    );
+  }
+
+  // Typing snapshot
+  for (const [username, data] of typing.entries()) {
+    res.write(
+      `event: typing:update\ndata: ${JSON.stringify({
+        username,
+        typing: Boolean(data?.typing),
+        updatedAt: data?.updatedAt || Date.now(),
       })}\n\n`
     );
   }
