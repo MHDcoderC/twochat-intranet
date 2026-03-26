@@ -39,7 +39,8 @@ const state = {
     otherActive: false,
     otherLastActiveAt: null,
     presenceLastSent: null,
-    presenceDebounceTimer: null
+    presenceDebounceTimer: null,
+    bannerTimer: null
 };
 
 // ==================== DOM ELEMENTS ====================
@@ -82,6 +83,7 @@ const DOM = {
     replyBar: $('replyBar'),
     replyBarText: $('replyBarText'),
     replyCancel: $('replyCancel'),
+    banner: $('banner'),
     presenceDot: document.querySelector('.online-dot'),
     presenceText: $('presenceText'),
     toast: $('toast')
@@ -113,6 +115,14 @@ const utils = {
         DOM.toast.textContent = msg;
         DOM.toast.classList.remove('hidden');
         setTimeout(() => DOM.toast.classList.add('hidden'), duration);
+    },
+
+    banner: (msg, duration = 1800) => {
+        if (!DOM.banner) return;
+        DOM.banner.textContent = msg;
+        DOM.banner.classList.remove('hidden');
+        if (state.bannerTimer) clearTimeout(state.bannerTimer);
+        state.bannerTimer = setTimeout(() => DOM.banner.classList.add('hidden'), duration);
     },
     
     normalize: (str) => str?.trim().replace(/\s+/g, '') || ''
@@ -423,6 +433,7 @@ const handlers = {
             DOM.messageInput.style.height = 'auto';
             ui.toggleSendBtn();
             handlers.clearReply();
+            utils.banner('ارسال شد');
         } catch (err) {
             utils.toast(err.message);
         }
@@ -440,7 +451,7 @@ const handlers = {
         try {
             await api.uploadMedia(form);
             handlers.closePreview();
-            utils.toast('ارسال شد');
+            utils.banner('ارسال شد');
             handlers.clearReply();
         } catch (err) {
             utils.toast(err.message);
@@ -521,7 +532,7 @@ const handlers = {
         
         try {
             await api.uploadMedia(form);
-            utils.toast('صدا ارسال شد');
+            utils.banner('صدا ارسال شد');
             handlers.clearReply();
         } catch (err) {
             utils.toast(err.message);
@@ -662,7 +673,7 @@ const handlers = {
             form.append('file', file);
             if (state.replyTo) form.append('replyTo', JSON.stringify(state.replyTo));
             await api.uploadMedia(form);
-            utils.toast('استیکر ارسال شد');
+            utils.banner('استیکر ارسال شد');
             handlers.clearReply();
         } catch (err) {
             utils.toast(err.message);
