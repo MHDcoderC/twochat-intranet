@@ -16,7 +16,7 @@ const MAX_MESSAGES = Number(process.env.MAX_MESSAGES || 1000);
 const TRUST_PROXY = String(process.env.TRUST_PROXY || "false").toLowerCase() === "true";
 const MESSAGE_FILE = path.join(__dirname, "data", "messages.json");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
-const ALLOWED_USERS = (process.env.ALLOWED_USERS || "alpha_user,beta_user")
+const ALLOWED_USERS = (process.env.ALLOWED_USERS || "user1,user2")
   .split(",")
   .map((u) => u.trim())
   .filter(Boolean)
@@ -120,6 +120,20 @@ function broadcast(event, payload) {
 
 function sanitizeOriginalName(fileName) {
   return path.basename(fileName).replace(/[^a-zA-Z0-9.\-_]/g, "_").slice(0, 80) || "file";
+}
+
+function sanitizeReplyTo(input) {
+  if (!input || typeof input !== "object") return null;
+  const id = typeof input.id === "string" ? input.id.slice(0, 200) : null;
+  if (!id) return null;
+
+  const typeRaw = typeof input.type === "string" ? input.type : "text";
+  const type = ["text", "image", "audio"].includes(typeRaw) ? typeRaw : "text";
+
+  const sender = typeof input.sender === "string" ? input.sender.slice(0, 50) : "";
+  const text = typeof input.text === "string" ? input.text.slice(0, 200) : "";
+
+  return { id, type, sender, text };
 }
 
 async function optimizeImageOnDisk(absInputPath) {
@@ -282,12 +296,14 @@ app.post("/api/messages", requireAuth, async (req, res) => {
   if (!text) return res.status(400).json({ error: "Text is required." });
   if (text.length > 2000) return res.status(400).json({ error: "Message too long." });
 
+  const replyTo = sanitizeReplyTo(req.body?.replyTo);
   const message = {
     id: crypto.randomUUID(),
     type: "text",
     text,
     sender: req.session.username,
     createdAt: new Date().toISOString(),
+    replyTo,
   };
   await appendMessage(message);
   res.status(201).json({ message });
@@ -298,6 +314,17 @@ app.post("/api/media", requireAuth, upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "File is required." });
   if (!["image", "audio"].includes(mediaType)) {
     return res.status(400).json({ error: "mediaType must be image or audio." });
+  }
+
+  let replyTo = null;
+  const rawReplyTo = req.body?.replyTo;
+  if (rawReplyTo) {
+    try {
+      const parsed = typeof rawReplyTo === "string" ? JSON.parse(rawReplyTo) : rawReplyTo;
+      replyTo = sanitizeReplyTo(parsed);
+    } catch (_err) {
+      replyTo = null;
+    }
   }
 
   let storedName = req.file.filename;
@@ -322,6 +349,7 @@ app.post("/api/media", requireAuth, upload.single("file"), async (req, res) => {
     text: "",
     sender: req.session.username,
     createdAt: new Date().toISOString(),
+    replyTo,
     file: {
       path: path.join("uploads", storedName).replace(/\\/g, "/"),
       url: `/uploads/${encodeURIComponent(storedName)}`,

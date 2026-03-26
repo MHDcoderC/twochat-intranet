@@ -34,7 +34,7 @@ npm start
 
 ```env
 PORT=3000
-ALLOWED_USERS=alpha_user,beta_user
+ALLOWED_USERS=user1,user2
 SESSION_SECRET=replace-with-a-long-random-secret
 MAX_MESSAGES=1000
 NODE_ENV=production

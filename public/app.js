@@ -33,7 +33,9 @@ const state = {
     emojiPicker: null,
     eventSource: null,
     reconnectTimer: null,
-    reconnectAttempts: 0
+    reconnectAttempts: 0,
+    replyTo: null,
+    messageMap: new Map()
 };
 
 // ==================== DOM ELEMENTS ====================
@@ -73,6 +75,9 @@ const DOM = {
     voiceSend: $('voiceSend'),
     logoutBtn: $('logoutBtn'),
     fileInput: $('fileInput'),
+    replyBar: $('replyBar'),
+    replyBarText: $('replyBarText'),
+    replyCancel: $('replyCancel'),
     toast: $('toast')
 };
 
@@ -130,7 +135,7 @@ const api = {
     logout: () => api.request('/api/logout', { method: 'POST' }),
     me: () => api.request('/api/me'),
     getMessages: () => api.request('/api/messages'),
-    sendText: (text) => api.request('/api/messages', { method: 'POST', body: JSON.stringify({ text }) }),
+    sendText: (text, replyTo) => api.request('/api/messages', { method: 'POST', body: JSON.stringify({ text, replyTo }) }),
     async uploadMedia(formData) {
         const res = await fetch('/api/media', { method: 'POST', body: formData, credentials: 'same-origin' });
         if (!res.ok) {
@@ -206,6 +211,22 @@ const ui = {
         el.className = `message ${isOut ? 'outgoing' : 'incoming'}`;
         el.dataset.id = msg.id;
         
+        let replyBlock = '';
+        if (msg.replyTo?.id) {
+            const replyType = msg.replyTo.type;
+            const preview =
+                replyType === 'text' ? (msg.replyTo.text || '') :
+                replyType === 'image' ? 'عکس' :
+                replyType === 'audio' ? 'صدا' :
+                'پیام';
+
+            replyBlock = `
+                <div class="reply-in-message">
+                    <div class="reply-in-title">ریپلای به ${utils.escape(msg.replyTo.sender || 'کاربر')}</div>
+                    <div class="reply-in-text">${utils.escape(String(preview).slice(0, 60))}</div>
+                </div>`;
+        }
+
         let content = '';
         if (msg.type === 'text') {
             content = `<div class="message-content">${utils.escape(msg.text)}</div>`;
@@ -218,23 +239,42 @@ const ui = {
                     <button class="voice-btn" data-play-voice="1">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
                     </button>
-                    <div class="voice-wave">${'<span></span>'.repeat(10)}</div>
-                    <span class="voice-duration">${utils.duration(dur)}</span>
-                    <audio hidden><source src="${msg.file.url}"></audio>
+                    <div class="voice-timeline">
+                        <div class="voice-wave" aria-hidden="true">${'<span></span>'.repeat(10)}</div>
+                        <div class="voice-bar"><div class="voice-bar-fill"></div></div>
+                    </div>
+                    <div class="voice-times">
+                        <span class="voice-current">0:00</span>
+                        <span class="voice-duration">${utils.duration(dur)}</span>
+                    </div>
+                    <audio hidden preload="none" data-voice-audio="1"><source src="${msg.file.url}"></audio>
                 </div>`;
         }
         
         const meta = `
             <div class="message-meta">
+                <button type="button" class="reply-btn" data-reply-id="${msg.id}" aria-label="ریپلای">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 17l-5-5 5-5" />
+                        <path d="M4 12h10a6 6 0 0 1 6 6" />
+                    </svg>
+                </button>
+                ${isOut ? `
+                <span class="message-status">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                        <polyline points="22 8 11 19 6 14" opacity="0.6"></polyline>
+                    </svg>
+                </span>` : ''}
                 <span class="message-time">${utils.time(msg.createdAt)}</span>
-                ${isOut ? '<span class="message-status"><svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg></span>' : ''}
             </div>`;
         
-        el.innerHTML = content + meta;
+        el.innerHTML = replyBlock + content + meta;
         return el;
     },
     
     addMessage(msg, scroll = true) {
+        state.messageMap.set(msg.id, msg);
         if (state.rendered.has(msg.id)) return;
         state.rendered.add(msg.id);
         DOM.messages.appendChild(ui.createMessage(msg));
@@ -244,6 +284,7 @@ const ui = {
     renderMessages(msgs) {
         DOM.messages.innerHTML = `<div class="date-separator"><span>گفتگو</span></div>`;
         state.rendered.clear();
+        state.messageMap.clear();
         [...msgs].sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt))
                  .forEach(m => ui.addMessage(m, false));
         DOM.messages.scrollTop = DOM.messages.scrollHeight;
@@ -272,8 +313,45 @@ const handlers = {
         state.user = null;
         state.other = null;
         state.rendered.clear();
+        state.replyTo = null;
+        DOM.replyBar?.classList.add('hidden');
+        state.messageMap.clear();
         if (state.eventSource) state.eventSource.close();
         ui.switchScreen(false);
+    },
+
+    setReply(msg) {
+        if (!msg || !msg.id) return;
+        const replyType = msg.type;
+        const preview =
+            replyType === 'text' ? (msg.text || '') :
+            replyType === 'image' ? 'عکس' :
+            replyType === 'audio' ? 'صدا' :
+            'پیام';
+
+        state.replyTo = {
+            id: msg.id,
+            type: replyType,
+            sender: msg.sender,
+            text: replyType === 'text' ? String(msg.text || '') : ''
+        };
+
+        DOM.replyBarText.textContent = `${msg.sender}: ${String(preview).slice(0, 50)}`;
+        DOM.replyBar?.classList.remove('hidden');
+        DOM.messageInput.focus();
+    },
+
+    setReplyById(replyId) {
+        const msg = state.messageMap.get(replyId);
+        if (msg) handlers.setReply(msg);
+    },
+
+    clearReply() {
+        state.replyTo = null;
+        if (DOM.replyBar) {
+            DOM.replyBarText.textContent = '';
+            DOM.replyBar.classList.add('hidden');
+        }
     },
     
     async sendText() {
@@ -281,10 +359,11 @@ const handlers = {
         if (!text) return;
         
         try {
-            await api.sendText(text);
+            await api.sendText(text, state.replyTo);
             DOM.messageInput.value = '';
             DOM.messageInput.style.height = 'auto';
             ui.toggleSendBtn();
+            handlers.clearReply();
         } catch (err) {
             utils.toast(err.message);
         }
@@ -296,12 +375,14 @@ const handlers = {
         const form = new FormData();
         form.append('mediaType', 'image');
         form.append('file', state.pendingImage);
+        if (state.replyTo) form.append('replyTo', JSON.stringify(state.replyTo));
         
         DOM.previewSend.disabled = true;
         try {
             await api.uploadMedia(form);
             handlers.closePreview();
             utils.toast('ارسال شد');
+            handlers.clearReply();
         } catch (err) {
             utils.toast(err.message);
             DOM.previewSend.disabled = false;
@@ -377,10 +458,12 @@ const handlers = {
         const form = new FormData();
         form.append('mediaType', 'audio');
         form.append('file', file);
+        if (state.replyTo) form.append('replyTo', JSON.stringify(state.replyTo));
         
         try {
             await api.uploadMedia(form);
             utils.toast('صدا ارسال شد');
+            handlers.clearReply();
         } catch (err) {
             utils.toast(err.message);
         }
@@ -395,16 +478,68 @@ const handlers = {
         const wrap = btn.closest('.message-voice');
         const audio = wrap.querySelector('audio');
         if (!audio) return;
-        
-        document.querySelectorAll('audio').forEach(a => { if (a !== audio) a.pause(); });
-        
-        if (audio.paused) {
-            audio.play();
-            btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
-        } else {
+
+        const fillEl = wrap.querySelector('.voice-bar-fill');
+        const currentEl = wrap.querySelector('.voice-current');
+        const durationEl = wrap.querySelector('.voice-duration');
+
+        const resetVoiceUI = (voiceEl) => {
+            voiceEl.classList.remove('is-playing');
+            const f = voiceEl.querySelector('.voice-bar-fill');
+            if (f) f.style.width = '0%';
+            const c = voiceEl.querySelector('.voice-current');
+            if (c) c.textContent = '0:00';
+        };
+
+        const isPlaying = !audio.paused;
+        if (isPlaying) {
             audio.pause();
+            resetVoiceUI(wrap);
             btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+            return;
         }
+
+        // Pause other voice messages and reset their timelines.
+        document.querySelectorAll('.message-voice').forEach((voiceEl) => {
+            const a = voiceEl.querySelector('audio');
+            if (a && a !== audio) {
+                a.pause();
+                resetVoiceUI(voiceEl);
+            }
+        });
+
+        wrap.classList.add('is-playing');
+        btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+
+        if (!audio.dataset.voiceEventsBound) {
+            audio.dataset.voiceEventsBound = '1';
+
+            audio.addEventListener('loadedmetadata', () => {
+                const d = audio.duration;
+                if (durationEl && d && Number.isFinite(d) && d > 0) {
+                    durationEl.textContent = utils.duration(d);
+                }
+            });
+
+            audio.addEventListener('timeupdate', () => {
+                if (!fillEl || !currentEl) return;
+                const d = audio.duration || 0;
+                const t = audio.currentTime || 0;
+                if (d > 0) fillEl.style.width = `${Math.max(0, Math.min(1, t / d)) * 100}%`;
+                currentEl.textContent = utils.duration(t);
+            });
+
+            audio.addEventListener('ended', () => {
+                resetVoiceUI(wrap);
+                btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+            });
+        }
+
+        audio.play().catch(() => {
+            // If autoplay is blocked, keep UI in non-playing state.
+            resetVoiceUI(wrap);
+            btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+        });
     },
     
     showEmoji() {
@@ -466,8 +601,10 @@ const handlers = {
             const form = new FormData();
             form.append('mediaType', 'image');
             form.append('file', file);
+            if (state.replyTo) form.append('replyTo', JSON.stringify(state.replyTo));
             await api.uploadMedia(form);
             utils.toast('استیکر ارسال شد');
+            handlers.clearReply();
         } catch (err) {
             utils.toast(err.message);
         }
@@ -557,6 +694,7 @@ const init = {
         DOM.voiceBtn.onclick = handlers.startRecord;
         DOM.voiceDelete.onclick = handlers.deleteRecord;
         DOM.voiceSend.onclick = () => state.recorder?.stop();
+        DOM.replyCancel.onclick = handlers.clearReply;
         DOM.emojiBtn.onclick = handlers.showEmoji;
         DOM.emojiClose.onclick = () => DOM.emojiOverlay.classList.add('hidden');
         DOM.emojiOverlay.onclick = (e) => { if (e.target === DOM.emojiOverlay) DOM.emojiOverlay.classList.add('hidden'); };
@@ -607,6 +745,12 @@ const init = {
         };
         
         document.onclick = (e) => {
+            const replyBtn = e.target.closest('[data-reply-id]');
+            if (replyBtn) {
+                handlers.setReplyById(replyBtn.dataset.replyId);
+                return;
+            }
+
             const voiceBtn = e.target.closest('[data-play-voice]');
             if (voiceBtn) {
                 handlers.playVoice(voiceBtn);
