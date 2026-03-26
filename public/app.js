@@ -56,7 +56,9 @@ const state = {
     editingMessageId: null
     ,
     reactionPicker: null,
-    reactionPickerMessageId: null
+    reactionPickerMessageId: null,
+    /** YYYY-M-D local; for day separators between messages */
+    lastDayKey: null
 };
 
 // ==================== DOM ELEMENTS ====================
@@ -105,12 +107,27 @@ const DOM = {
     banner: $('banner'),
     presenceDot: document.querySelector('.online-dot'),
     presenceText: $('presenceText'),
-    toast: $('toast')
+    toast: $('toast'),
+    archiveBtn: $('archiveBtn'),
+    archiveOverlay: $('archiveOverlay'),
+    archiveClose: $('archiveClose'),
+    archiveImages: $('archiveImages'),
+    archiveVoices: $('archiveVoices')
 };
 
 // ==================== UTILS ====================
 const utils = {
     time: (iso) => new Date(iso).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
+
+    dayKey: (iso) => {
+        const d = new Date(iso || Date.now());
+        return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    },
+
+    dayLabel: (iso) => {
+        const d = new Date(iso || Date.now());
+        return d.toLocaleDateString('fa-IR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    },
     
     duration: (sec) => {
         const m = Math.floor(sec / 60);
@@ -358,11 +375,23 @@ const ui = {
         el.innerHTML = replyBlock + content + reactionsBlock + meta;
         return el;
     },
+
+    insertDaySeparatorIfNeeded(iso) {
+        if (!DOM.messages) return;
+        const key = utils.dayKey(iso);
+        if (state.lastDayKey === key) return;
+        state.lastDayKey = key;
+        const wrap = document.createElement('div');
+        wrap.className = 'date-separator day-separator';
+        wrap.innerHTML = `<span>${utils.escape(utils.dayLabel(iso))}</span>`;
+        DOM.messages.appendChild(wrap);
+    },
     
     addMessage(msg, scroll = true) {
         state.messageMap.set(msg.id, msg);
         if (state.rendered.has(msg.id)) return;
         state.rendered.add(msg.id);
+        ui.insertDaySeparatorIfNeeded(msg.createdAt);
         const el = ui.createMessage(msg);
         DOM.messages.appendChild(el);
         state.messageElMap.set(msg.id, el);
@@ -371,13 +400,79 @@ const ui = {
     },
     
     renderMessages(msgs) {
-        DOM.messages.innerHTML = `<div class="date-separator"><span>گفتگو</span></div>`;
+        DOM.messages.innerHTML = '';
+        state.lastDayKey = null;
         state.rendered.clear();
         state.messageMap.clear();
         state.messageElMap.clear();
         [...msgs].sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt))
                  .forEach(m => ui.addMessage(m, false));
         DOM.messages.scrollTop = DOM.messages.scrollHeight;
+    },
+
+    scrollToMessage(messageId) {
+        const el = state.messageElMap.get(messageId);
+        if (!el || !DOM.messages) return;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('message-highlight');
+        setTimeout(() => el.classList.remove('message-highlight'), 1600);
+    },
+
+    renderArchive(messages) {
+        const imgs = (messages || []).filter((m) => m && m.type === 'image' && m.file?.url);
+        const voices = (messages || []).filter((m) => m && m.type === 'audio' && m.file?.url);
+        if (DOM.archiveImages) {
+            DOM.archiveImages.innerHTML = imgs.length
+                ? imgs.map((m) => `
+                    <button type="button" class="archive-thumb" data-archive-msg="${m.id}" aria-label="عکس">
+                        <img src="${m.file.url}" loading="lazy" alt="">
+                        <span class="archive-thumb-meta">${utils.escape(m.sender)} · ${utils.time(m.createdAt)}</span>
+                    </button>`).join('')
+                : '<div class="archive-empty">عکسی نیست</div>';
+            DOM.archiveImages.querySelectorAll('[data-archive-msg]').forEach((btn) => {
+                btn.onclick = () => {
+                    handlers.closeArchive();
+                    ui.scrollToMessage(btn.dataset.archiveMsg);
+                };
+            });
+        }
+        if (DOM.archiveVoices) {
+            DOM.archiveVoices.innerHTML = voices.length
+                ? voices.map((m) => {
+                    const dur = m.file.duration ? utils.duration(m.file.duration) : '';
+                    return `
+                    <div class="archive-voice-row">
+                        <div class="archive-voice-info">
+                            <strong>${utils.escape(m.sender)}</strong>
+                            <span>${utils.time(m.createdAt)}${dur ? ` · ${dur}` : ''}</span>
+                        </div>
+                        <div class="archive-voice-actions">
+                            <button type="button" class="archive-voice-play" data-archive-play="${encodeURIComponent(m.file.url)}">پخش</button>
+                            <button type="button" class="archive-voice-jump" data-archive-msg="${m.id}">در چت</button>
+                        </div>
+                        <audio class="archive-audio" preload="none" src="${m.file.url}"></audio>
+                    </div>`;
+                }).join('')
+                : '<div class="archive-empty">ویسی نیست</div>';
+            DOM.archiveVoices.querySelectorAll('[data-archive-play]').forEach((btn) => {
+                btn.onclick = () => {
+                    const url = decodeURIComponent(btn.dataset.archivePlay);
+                    const row = btn.closest('.archive-voice-row');
+                    const a = row?.querySelector('.archive-audio');
+                    if (a) {
+                        a.play().catch(() => {});
+                    } else {
+                        new Audio(url).play().catch(() => {});
+                    }
+                };
+            });
+            DOM.archiveVoices.querySelectorAll('[data-archive-msg]').forEach((btn) => {
+                btn.onclick = () => {
+                    handlers.closeArchive();
+                    ui.scrollToMessage(btn.dataset.archiveMsg);
+                };
+            });
+        }
     },
 
     updatePresence(isOtherOnline, lastActiveAt) {
@@ -498,7 +593,25 @@ const handlers = {
         state.readFlushTimer = null;
         handlers.stopReadSyncTicker?.();
         handlers.stopPresenceTicker();
+        handlers.closeArchive();
+        state.lastDayKey = null;
         ui.switchScreen(false);
+    },
+
+    async showArchive() {
+        if (!state.user) return;
+        try {
+            const { messages } = await api.getMessages();
+            const media = [...(messages || [])].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            ui.renderArchive(media);
+            DOM.archiveOverlay?.classList.remove('hidden');
+        } catch (err) {
+            utils.toast(err.message);
+        }
+    },
+
+    closeArchive() {
+        DOM.archiveOverlay?.classList.add('hidden');
     },
 
     getMyActive() {
@@ -1219,6 +1332,14 @@ const init = {
         DOM.previewCancel.onclick = handlers.closePreview;
         DOM.stickerClose.onclick = () => DOM.stickerOverlay.classList.add('hidden');
         DOM.stickerOverlay.onclick = (e) => { if (e.target === DOM.stickerOverlay) DOM.stickerOverlay.classList.add('hidden'); };
+
+        if (DOM.archiveBtn) DOM.archiveBtn.onclick = () => handlers.showArchive();
+        if (DOM.archiveClose) DOM.archiveClose.onclick = () => handlers.closeArchive();
+        if (DOM.archiveOverlay) {
+            DOM.archiveOverlay.onclick = (e) => {
+                if (e.target === DOM.archiveOverlay) handlers.closeArchive();
+            };
+        }
         
         DOM.messageInput.oninput = () => {
             if (DOM.messageInput.value.length > CONFIG.MAX_TEXT) {
