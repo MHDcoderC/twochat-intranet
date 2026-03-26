@@ -35,7 +35,11 @@ const state = {
     reconnectTimer: null,
     reconnectAttempts: 0,
     replyTo: null,
-    messageMap: new Map()
+    messageMap: new Map(),
+    otherActive: false,
+    otherLastActiveAt: null,
+    presenceLastSent: null,
+    presenceDebounceTimer: null
 };
 
 // ==================== DOM ELEMENTS ====================
@@ -78,6 +82,8 @@ const DOM = {
     replyBar: $('replyBar'),
     replyBarText: $('replyBarText'),
     replyCancel: $('replyCancel'),
+    presenceDot: document.querySelector('.online-dot'),
+    presenceText: $('presenceText'),
     toast: $('toast')
 };
 
@@ -143,7 +149,8 @@ const api = {
             throw new Error(data.error || 'خطا در ارسال فایل');
         }
         return res.json();
-    }
+    },
+    setPresence: (active) => api.request('/api/presence', { method: 'POST', body: JSON.stringify({ active }) })
 };
 
 // ==================== NOTIFICATIONS ====================
@@ -288,7 +295,20 @@ const ui = {
         [...msgs].sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt))
                  .forEach(m => ui.addMessage(m, false));
         DOM.messages.scrollTop = DOM.messages.scrollHeight;
-    }
+    },
+
+    updatePresence(isOtherOnline, lastActiveAt) {
+        state.otherActive = Boolean(isOtherOnline);
+        state.otherLastActiveAt = lastActiveAt || null;
+
+        if (DOM.presenceDot) {
+            DOM.presenceDot.classList.toggle('offline', !state.otherActive);
+        }
+
+        if (DOM.presenceText) {
+            DOM.presenceText.textContent = state.otherActive ? 'آنلاین' : 'آفلاین';
+        }
+    },
 };
 
 // ==================== HANDLERS ====================
@@ -318,6 +338,45 @@ const handlers = {
         state.messageMap.clear();
         if (state.eventSource) state.eventSource.close();
         ui.switchScreen(false);
+    },
+
+    getMyActive() {
+        return document.visibilityState === 'visible' && document.hasFocus();
+    },
+
+    sendPresence(active) {
+        // Use keepalive so the request is more likely to be delivered on tab close.
+        const payload = JSON.stringify({ active });
+        fetch('/api/presence', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+            credentials: 'same-origin',
+            keepalive: true,
+        }).catch(() => {});
+    },
+
+    async syncPresence() {
+        if (!state.user) return;
+        const active = handlers.getMyActive();
+
+        // Debounce to avoid spamming server during rapid visibility changes.
+        if (state.presenceDebounceTimer) clearTimeout(state.presenceDebounceTimer);
+        state.presenceDebounceTimer = setTimeout(async () => {
+            if (state.user && handlers.getMyActive() === active) {
+                try {
+                    await api.setPresence(active);
+                } catch {
+                    // Best-effort; presence is a UI hint, not critical.
+                }
+                state.presenceLastSent = active;
+            }
+        }, 250);
+    },
+
+    handlePresenceUpdate(payload) {
+        if (!payload || payload.username !== state.other) return;
+        ui.updatePresence(Boolean(payload.active), payload.lastActiveAt);
     },
 
     setReply(msg) {
@@ -631,6 +690,13 @@ const realtime = {
                 notify.show(msg);
             } catch {}
         });
+
+        state.eventSource.addEventListener('presence:update', (e) => {
+            try {
+                const payload = JSON.parse(e.data);
+                handlers.handlePresenceUpdate(payload);
+            } catch {}
+        });
         state.eventSource.onerror = () => {
             state.eventSource?.close();
             const retryIn = Math.min(1000 * (2 ** state.reconnectAttempts), 15000);
@@ -657,6 +723,8 @@ const init = {
         ui.setHeader();
         ui.switchScreen(true);
         notify.init();
+        ui.updatePresence(false, null);
+        handlers.syncPresence();
         
         const { messages } = await api.getMessages();
         ui.renderMessages(messages);
@@ -766,9 +834,31 @@ const init = {
             }
         };
         
-        document.onvisibilitychange = () => {
-            if (!document.hidden && state.user) realtime.connect();
-        };
+        const presenceFromVisibility = () => handlers.getMyActive();
+
+        document.addEventListener('visibilitychange', () => {
+            if (!state.user) return;
+            handlers.sendPresence(presenceFromVisibility());
+            handlers.syncPresence();
+            if (!document.hidden) realtime.connect();
+        });
+
+        window.addEventListener('focus', () => {
+            if (!state.user) return;
+            handlers.sendPresence(true);
+            handlers.syncPresence();
+        });
+
+        window.addEventListener('blur', () => {
+            if (!state.user) return;
+            handlers.sendPresence(false);
+            handlers.syncPresence();
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (!state.user) return;
+            handlers.sendPresence(false);
+        });
     },
     
     async start() {

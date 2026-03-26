@@ -42,6 +42,8 @@ const allowedAudioTypes = new Set([
 ]);
 
 const sseClients = new Set();
+const sseClientUser = new Map(); // Map<SSE Response, username>
+const presence = new Map(); // Map<username, { active: boolean, lastActiveAt: number }>
 let messageWriteQueue = Promise.resolve();
 
 async function ensureStorage() {
@@ -364,6 +366,21 @@ app.post("/api/media", requireAuth, upload.single("file"), async (req, res) => {
   res.status(201).json({ message });
 });
 
+app.post("/api/presence", requireAuth, async (req, res) => {
+  const active = Boolean(req.body?.active);
+  const username = req.session.username;
+
+  const next = {
+    active,
+    lastActiveAt: Date.now(),
+  };
+
+  presence.set(username, next);
+
+  broadcast("presence:update", { username, ...next });
+  res.json({ ok: true });
+});
+
 app.get("/api/events", requireAuth, (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -372,6 +389,17 @@ app.get("/api/events", requireAuth, (req, res) => {
 
   res.write(`event: hello\ndata: ${JSON.stringify({ ok: true })}\n\n`);
   sseClients.add(res);
+  sseClientUser.set(res, req.session.username);
+
+  // Default presence until the client syncs (it will also adjust on visibility changes).
+  if (!presence.has(req.session.username)) {
+    presence.set(req.session.username, { active: true, lastActiveAt: Date.now() });
+    broadcast("presence:update", {
+      username: req.session.username,
+      active: true,
+      lastActiveAt: Date.now(),
+    });
+  }
   const heartbeat = setInterval(() => {
     try {
       res.write(`event: ping\ndata: ${Date.now()}\n\n`);
@@ -384,6 +412,12 @@ app.get("/api/events", requireAuth, (req, res) => {
   req.on("close", () => {
     clearInterval(heartbeat);
     sseClients.delete(res);
+    const username = sseClientUser.get(res);
+    sseClientUser.delete(res);
+    if (username) {
+      presence.set(username, { active: false, lastActiveAt: Date.now() });
+      broadcast("presence:update", { username, active: false, lastActiveAt: Date.now() });
+    }
     res.end();
   });
 });

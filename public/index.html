@@ -241,6 +241,11 @@
             border-radius: 50%;
             border: 2px solid var(--primary);
         }
+
+        .online-dot.offline {
+            background: rgba(255,255,255,0.20);
+            border-color: rgba(255,255,255,0.18);
+        }
         
         .header-text { flex: 1; min-width: 0; }
         .header-text h2 { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -943,6 +948,11 @@
             border-color: #5b5cf0;
         }
 
+        .online-dot.offline {
+            background: rgba(255,255,255,0.18);
+            border-color: rgba(255,255,255,0.14);
+        }
+
         .messages {
             padding: 14px 12px 20px;
             background: transparent;
@@ -1232,7 +1242,7 @@
                 </div>
                 <div class="header-text">
                     <h2 id="chatTitle">گفتگو</h2>
-                    <span>آنلاین</span>
+                    <span id="presenceText">آفلاین</span>
                 </div>
             </div>
             
