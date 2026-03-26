@@ -14,6 +14,7 @@ const CONFIG = {
     ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
     STICKER_MANIFEST: '/stickers/manifest.json'
 };
+const EMOJIS = ['😀','😁','😂','🤣','😊','😍','😘','😎','🙂','🙃','😉','🤔','😴','😭','😡','👍','👏','🙏','❤️','💔','🔥','🎉','🌹','🤝','✅','❌','💬','📌','🎯','🚀','⭐','⚡'];
 
 // ==================== STATE ====================
 const state = {
@@ -408,18 +409,19 @@ const handlers = {
     
     showEmoji() {
         if (!state.emojiPicker) {
-            state.emojiPicker = new window.EmojiMart.Picker({
-                onEmojiSelect: (emoji) => {
-                    DOM.messageInput.value += emoji.native;
+            DOM.emojiPicker.innerHTML = EMOJIS.map((emoji) => (
+                `<button type="button" class="emoji-item" data-emoji="${emoji}">${emoji}</button>`
+            )).join('');
+            DOM.emojiPicker.classList.add('emoji-grid');
+            DOM.emojiPicker.querySelectorAll('[data-emoji]').forEach((item) => {
+                item.onclick = () => {
+                    DOM.messageInput.value += item.dataset.emoji;
                     ui.toggleSendBtn();
                     DOM.emojiOverlay.classList.add('hidden');
                     DOM.messageInput.focus();
-                },
-                theme: 'light',
-                set: 'native',
-                locale: 'fa'
+                };
             });
-            DOM.emojiPicker.appendChild(state.emojiPicker);
+            state.emojiPicker = true;
         }
         DOM.emojiOverlay.classList.remove('hidden');
     },

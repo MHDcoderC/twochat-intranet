@@ -15,6 +15,7 @@
 - ذخیره‌سازی محلی پیام‌ها در `data/messages.json`
 - آپلود امن فایل در `uploads/`
 - فشرده‌سازی خودکار تصویر با `sharp`
+- ایموجی‌پیکر داخلی بدون CDN خارجی
 - احراز هویت سشن‌بیس برای دو کاربر مشخص
 
 ## اجرای سریع
@@ -25,15 +26,15 @@ cp .env.example .env
 npm start
 ```
 
-سرویس به طور پیش‌فرض روی `http://localhost:5730` اجرا می‌شود.
+سرویس به طور پیش‌فرض روی `http://localhost:3000` اجرا می‌شود.
 
 ## تنظیمات محیطی
 
 فایل `.env`:
 
 ```env
-PORT=5730
-ALLOWED_USERS=user1,user2
+PORT=3000
+ALLOWED_USERS=alpha_user,beta_user
 SESSION_SECRET=replace-with-a-long-random-secret
 MAX_MESSAGES=1000
 NODE_ENV=production
@@ -44,17 +45,14 @@ TRUST_PROXY=false
 - `SESSION_SECRET`: مقدار طولانی و تصادفی (حداقل 32 کاراکتر).
 - `TRUST_PROXY=true`: فقط زمانی فعال شود که پشت reverse proxy هستید.
 
-نمونه استقرار روی سرور شما:
+نمونه استقرار عمومی (بدون اطلاعات شخصی):
 
 ```env
-PORT=5730
-ALLOWED_USERS=user1,user2
+PORT=YOUR_INTERNAL_PORT
+ALLOWED_USERS=user_a,user_b
 NODE_ENV=production
 TRUST_PROXY=true
 ```
-
-نمونه آدرس دسترسی سایت:
-`https://chmm.mmdcode.top/`
 
 ## راهنمای استقرار روی سرور داخلی
 

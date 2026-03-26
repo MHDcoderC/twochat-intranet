@@ -8,11 +8,29 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="mobile-web-app-capable" content="yes">
     <title>Chat</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/emoji-mart@5.5.2/css/emoji-mart.css">
     <style>
+        @font-face {
+            font-family: 'Vazirmatn';
+            src: url('/assets/fonts/vazirmatn-400.woff2') format('woff2');
+            font-weight: 400;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: 'Vazirmatn';
+            src: url('/assets/fonts/vazirmatn-500.woff2') format('woff2');
+            font-weight: 500;
+            font-style: normal;
+            font-display: swap;
+        }
+        @font-face {
+            font-family: 'Vazirmatn';
+            src: url('/assets/fonts/vazirmatn-700.woff2') format('woff2');
+            font-weight: 700;
+            font-style: normal;
+            font-display: swap;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         
         :root {
@@ -503,6 +521,23 @@
         
         .emoji-header h3 { font-size: 18px; font-weight: 600; }
         .emoji-close { font-size: 24px; cursor: pointer; padding: 4px; }
+        .emoji-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 8px;
+        }
+        .emoji-item {
+            border: none;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            font-size: 22px;
+            line-height: 1;
+            padding: 8px 4px;
+            cursor: pointer;
+        }
+        .emoji-item:active {
+            transform: scale(0.95);
+        }
         
         /* Sticker Panel */
         .sticker-overlay {
@@ -1163,7 +1198,6 @@
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
 
-    <script src="https://cdn.jsdelivr.net/npm/emoji-mart@5.5.2/dist/browser.js"></script>
     <script src="/app.js"></script>
 </body>
 </html>
