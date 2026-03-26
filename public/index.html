@@ -519,6 +519,8 @@
             display: flex;
             align-items: center;
             gap: 10px;
+            direction: rtl;
+            text-align: right;
         }
 
         .reply-bar.hidden { display: none !important; }
@@ -541,6 +543,8 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            direction: rtl;
+            text-align: right;
         }
 
         .reply-cancel {
@@ -586,6 +590,8 @@
             display: flex;
             align-items: flex-end;
             gap: 8px;
+            direction: rtl;
+            justify-content: flex-start;
             background: var(--bg);
             border-radius: 24px;
             padding: 6px;
@@ -620,6 +626,9 @@
             outline: none;
             max-height: 120px;
             resize: none;
+            direction: rtl;
+            text-align: right;
+            unicode-bidi: plaintext;
         }
         
         .composer-input::placeholder { color: var(--text-secondary); }
@@ -997,6 +1006,7 @@
             border-radius: 18px;
             padding: 6px;
             box-shadow: none;
+            direction: rtl;
         }
 
         .composer-input {
@@ -1004,6 +1014,9 @@
             font-size: 15px;
             line-height: 1.5;
             padding: 11px 8px;
+            direction: rtl;
+            text-align: right;
+            unicode-bidi: plaintext;
         }
 
         .composer-input::placeholder {
