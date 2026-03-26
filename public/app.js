@@ -14,6 +14,7 @@ const CONFIG = {
     ALLOWED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
     STICKER_MANIFEST: '/stickers/manifest.json'
 };
+const REACTIONS = ['💕', '❤️', '😍', '👌'];
 const EMOJIS = ['😀','😁','😂','🤣','😊','😍','😘','😎','🙂','🙃','😉','🤔','😴','😭','😡','👍','👏','🙏','❤️','💔','🔥','🎉','🌹','🤝','✅','❌','💬','📌','🎯','🚀','⭐','⚡'];
 
 // ==================== STATE ====================
@@ -23,6 +24,7 @@ const state = {
     users: [],
     messages: [],
     rendered: new Set(),
+    messageElMap: new Map(), // Map<messageId, HTMLElement>
     recording: false,
     recorder: null,
     recordStart: 0,
@@ -36,12 +38,21 @@ const state = {
     reconnectAttempts: 0,
     replyTo: null,
     messageMap: new Map(),
+    readObserver: null,
+    readPendingIds: new Set(),
+    readFlushTimer: null,
     otherActive: false,
     otherLastActiveAt: null,
     presenceLastSent: null,
     presenceDebounceTimer: null,
     bannerTimer: null,
-    presenceTickerTimer: null
+    presenceTickerTimer: null,
+    readSyncTimer: null
+    ,
+    editingMessageId: null
+    ,
+    reactionPicker: null,
+    reactionPickerMessageId: null
 };
 
 // ==================== DOM ELEMENTS ====================
@@ -84,6 +95,9 @@ const DOM = {
     replyBar: $('replyBar'),
     replyBarText: $('replyBarText'),
     replyCancel: $('replyCancel'),
+    editBar: $('editBar'),
+    editBarText: $('editBarText'),
+    editCancel: $('editCancel'),
     banner: $('banner'),
     presenceDot: document.querySelector('.online-dot'),
     presenceText: $('presenceText'),
@@ -151,17 +165,20 @@ const api = {
     login: (username) => api.request('/api/login', { method: 'POST', body: JSON.stringify({ username }) }),
     logout: () => api.request('/api/logout', { method: 'POST' }),
     me: () => api.request('/api/me'),
-    getMessages: () => api.request('/api/messages'),
-    sendText: (text, replyTo) => api.request('/api/messages', { method: 'POST', body: JSON.stringify({ text, replyTo }) }),
+    getMessages: () => api.request(`/api/messages?username=${encodeURIComponent(state.user)}`),
+    sendText: (text, replyTo) => api.request(`/api/messages?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: JSON.stringify({ text, replyTo }) }),
+    editText: (id, text) => api.request(`/api/messages/${encodeURIComponent(id)}?username=${encodeURIComponent(state.user)}`, { method: 'PATCH', body: JSON.stringify({ text }) }),
+    toggleReaction: (id, emoji) => api.request(`/api/messages/${encodeURIComponent(id)}/reactions?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: JSON.stringify({ emoji }) }),
+    markRead: (ids) => api.request(`/api/messages/read?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: JSON.stringify({ ids }) }),
     async uploadMedia(formData) {
-        const res = await fetch('/api/media', { method: 'POST', body: formData, credentials: 'same-origin' });
+        const res = await fetch(`/api/media?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: formData, credentials: 'same-origin' });
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(data.error || 'خطا در ارسال فایل');
         }
         return res.json();
     },
-    setPresence: (active) => api.request('/api/presence', { method: 'POST', body: JSON.stringify({ active }) })
+    setPresence: (active) => api.request(`/api/presence?username=${encodeURIComponent(state.user)}`, { method: 'POST', body: JSON.stringify({ active }) })
 };
 
 // ==================== NOTIFICATIONS ====================
@@ -207,6 +224,23 @@ const notify = {
 
 // ==================== UI COMPONENTS ====================
 const ui = {
+    statusIcon(sentOrRead) {
+        const single = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>`;
+
+        if (sentOrRead === 'read') {
+            return `<span class="ticks ticks-read" aria-label="خوانده شد">
+                <span class="tick tick-1">${single}</span>
+                <span class="tick tick-2">${single}</span>
+            </span>`;
+        }
+
+        return `<span class="ticks ticks-sent" aria-label="ارسال شد">
+            <span class="tick">${single}</span>
+        </span>`;
+    },
+
     switchScreen(isChat) {
         DOM.loginScreen.classList.toggle('hidden', isChat);
         DOM.chatScreen.classList.toggle('hidden', !isChat);
@@ -228,6 +262,7 @@ const ui = {
         const el = document.createElement('div');
         el.className = `message ${isOut ? 'outgoing' : 'incoming'}`;
         el.dataset.id = msg.id;
+        el.dataset.sender = msg.sender;
         
         let replyBlock = '';
         if (msg.replyTo?.id) {
@@ -268,7 +303,35 @@ const ui = {
                     <audio hidden preload="none" data-voice-audio="1"><source src="${msg.file.url}"></audio>
                 </div>`;
         }
+
+        const reactions = msg.reactions && typeof msg.reactions === 'object' ? msg.reactions : {};
+        const chips = Object.entries(reactions)
+            .filter(([emoji, users]) => REACTIONS.includes(emoji) && Array.isArray(users) && users.length > 0)
+            .map(([emoji, users]) => `<span class="reaction-chip" data-react-id="${msg.id}" data-react-emoji="${utils.escape(emoji)}">${emoji} <span class="reaction-count">${users.length}</span></span>`)
+            .join('');
+        const reactionsBlock = chips ? `<div class="message-reactions">${chips}</div>` : '';
         
+        const isRead = isOut && Array.isArray(msg.readBy) && state.other && msg.readBy.includes(state.other);
+        const statusClass = isRead ? 'read' : 'sent';
+        const statusIcon = ui.statusIcon(isRead ? 'read' : 'sent');
+
+        const editedBadge = msg.editedAt ? `<span class="message-edited" title="ویرایش شده">ویرایش‌شده</span>` : '';
+        const editBtn = (isOut && msg.type === 'text')
+            ? `<button type="button" class="reply-btn" data-edit-id="${msg.id}" aria-label="ویرایش">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                    </svg>
+               </button>`
+            : '';
+
+        const reactBtn = `<button type="button" class="reply-btn" data-react-id="${msg.id}" aria-label="ری‌اکشن">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15a4 4 0 0 1-4 4H7l-4 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/>
+                    <path d="M8 10h.01M12 10h.01M16 10h.01"/>
+                </svg>
+            </button>`;
+
         const meta = `
             <div class="message-meta">
                 <button type="button" class="reply-btn" data-reply-id="${msg.id}" aria-label="ریپلای">
@@ -277,17 +340,17 @@ const ui = {
                         <path d="M4 12h10a6 6 0 0 1 6 6" />
                     </svg>
                 </button>
+                ${editBtn}
+                ${reactBtn}
+                ${editedBadge}
                 ${isOut ? `
-                <span class="message-status">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="20 6 9 17 4 12"></polyline>
-                        <polyline points="21 7 10 18 5 13"></polyline>
-                    </svg>
+                <span class="message-status ${statusClass}">
+                    ${statusIcon}
                 </span>` : ''}
                 <span class="message-time">${utils.time(msg.createdAt)}</span>
             </div>`;
         
-        el.innerHTML = replyBlock + content + meta;
+        el.innerHTML = replyBlock + content + reactionsBlock + meta;
         return el;
     },
     
@@ -295,7 +358,10 @@ const ui = {
         state.messageMap.set(msg.id, msg);
         if (state.rendered.has(msg.id)) return;
         state.rendered.add(msg.id);
-        DOM.messages.appendChild(ui.createMessage(msg));
+        const el = ui.createMessage(msg);
+        DOM.messages.appendChild(el);
+        state.messageElMap.set(msg.id, el);
+        if (msg.sender !== state.user) handlers.observeIncomingMessage(el);
         if (scroll) DOM.messages.scrollTop = DOM.messages.scrollHeight;
     },
     
@@ -303,6 +369,7 @@ const ui = {
         DOM.messages.innerHTML = `<div class="date-separator"><span>گفتگو</span></div>`;
         state.rendered.clear();
         state.messageMap.clear();
+        state.messageElMap.clear();
         [...msgs].sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt))
                  .forEach(m => ui.addMessage(m, false));
         DOM.messages.scrollTop = DOM.messages.scrollHeight;
@@ -320,6 +387,71 @@ const ui = {
             DOM.presenceText.textContent = state.otherActive ? 'آنلاین' : 'آفلاین';
         }
     },
+
+    updateMessageReadReceipt(msg) {
+        if (!msg?.id) return;
+        const el = state.messageElMap.get(msg.id);
+        if (!el) return;
+
+        // Read receipts only show on outgoing messages.
+        if (msg.sender !== state.user) return;
+
+        const isRead = Array.isArray(msg.readBy) && state.other && msg.readBy.includes(state.other);
+        const statusEl = el.querySelector('.message-status');
+        if (!statusEl) return;
+
+        statusEl.classList.toggle('read', isRead);
+        statusEl.classList.toggle('sent', !isRead);
+        statusEl.innerHTML = ui.statusIcon(isRead ? 'read' : 'sent');
+    },
+
+    updateMessageText(msg) {
+        if (!msg?.id) return;
+        const el = state.messageElMap.get(msg.id);
+        if (!el) return;
+        const content = el.querySelector('.message-content');
+        if (content && msg.type === 'text') content.innerHTML = utils.escape(msg.text || '');
+
+        let badge = el.querySelector('.message-edited');
+        if (msg.editedAt) {
+            if (!badge) {
+                badge = document.createElement('span');
+                badge.className = 'message-edited';
+                badge.title = 'ویرایش شده';
+                badge.textContent = 'ویرایش‌شده';
+                const meta = el.querySelector('.message-meta');
+                const time = el.querySelector('.message-time');
+                if (meta && time) meta.insertBefore(badge, time);
+            }
+        } else if (badge) {
+            badge.remove();
+        }
+    },
+
+    updateMessageReactions(msg) {
+        if (!msg?.id) return;
+        const el = state.messageElMap.get(msg.id);
+        if (!el) return;
+
+        const reactions = msg.reactions && typeof msg.reactions === 'object' ? msg.reactions : {};
+        const chips = Object.entries(reactions)
+            .filter(([emoji, users]) => REACTIONS.includes(emoji) && Array.isArray(users) && users.length > 0)
+            .map(([emoji, users]) => `<span class="reaction-chip" data-react-id="${msg.id}" data-react-emoji="${utils.escape(emoji)}">${emoji} <span class="reaction-count">${users.length}</span></span>`)
+            .join('');
+
+        let block = el.querySelector('.message-reactions');
+        if (!chips) {
+            if (block) block.remove();
+            return;
+        }
+        if (!block) {
+            block = document.createElement('div');
+            block.className = 'message-reactions';
+            const meta = el.querySelector('.message-meta');
+            if (meta) el.insertBefore(block, meta);
+        }
+        block.innerHTML = chips;
+    },
 };
 
 // ==================== HANDLERS ====================
@@ -329,13 +461,12 @@ const handlers = {
         const username = utils.normalize(DOM.username.value);
         if (!username) return utils.toast('نام کاربری را وارد کنید');
         
-        try {
-            await api.login(username);
-            localStorage.setItem(CONFIG.STORAGE_KEY, username);
-            await init.chat(username);
-        } catch (err) {
-            utils.toast(err.message);
+        if (!state.users.includes(username)) {
+            return utils.toast('نام کاربری نامعتبر است.');
         }
+
+        localStorage.setItem(CONFIG.STORAGE_KEY, username);
+        await init.chat(username);
     },
     
     async logout() {
@@ -344,10 +475,16 @@ const handlers = {
         state.user = null;
         state.other = null;
         state.rendered.clear();
+        state.messageElMap.clear();
         state.replyTo = null;
         DOM.replyBar?.classList.add('hidden');
         state.messageMap.clear();
         if (state.eventSource) state.eventSource.close();
+        handlers.teardownReadObserver();
+        state.readPendingIds.clear();
+        if (state.readFlushTimer) clearTimeout(state.readFlushTimer);
+        state.readFlushTimer = null;
+        handlers.stopReadSyncTicker?.();
         handlers.stopPresenceTicker();
         ui.switchScreen(false);
     },
@@ -361,7 +498,7 @@ const handlers = {
     sendPresence(active) {
         // Use keepalive so the request is more likely to be delivered on tab close.
         const payload = JSON.stringify({ active });
-        fetch('/api/presence', {
+        fetch(`/api/presence?username=${encodeURIComponent(state.user)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: payload,
@@ -385,7 +522,7 @@ const handlers = {
                 }
                 state.presenceLastSent = active;
             }
-        }, 250);
+        }, 150);
     },
 
     startPresenceTicker() {
@@ -394,7 +531,7 @@ const handlers = {
         state.presenceTickerTimer = setInterval(() => {
             if (!state.user) return;
             handlers.syncPresence();
-        }, 20000);
+        }, 5000);
     },
 
     stopPresenceTicker() {
@@ -402,9 +539,121 @@ const handlers = {
         state.presenceTickerTimer = null;
     },
 
+    startReadSyncTicker() {
+        handlers.stopReadSyncTicker();
+        state.readSyncTimer = setInterval(async () => {
+            if (!state.user) return;
+            if (document.visibilityState !== 'visible') return;
+            if (!DOM.chatScreen || DOM.chatScreen.classList.contains('hidden')) return;
+            try {
+                const { messages } = await api.getMessages();
+                (messages || []).forEach((msg) => {
+                    if (!msg?.id) return;
+                    state.messageMap.set(msg.id, msg);
+                    ui.updateMessageReadReceipt(msg);
+                    ui.updateMessageReactions(msg);
+                });
+            } catch {
+                // best-effort
+            }
+        }, 2000);
+    },
+
+    stopReadSyncTicker() {
+        if (state.readSyncTimer) clearInterval(state.readSyncTimer);
+        state.readSyncTimer = null;
+    },
+
     handlePresenceUpdate(payload) {
         if (!payload || payload.username !== state.other) return;
         ui.updatePresence(Boolean(payload.active), payload.lastActiveAt);
+    },
+
+    setupReadObserver() {
+        handlers.teardownReadObserver();
+
+        if (!DOM.messages) return;
+
+        state.readObserver = new IntersectionObserver(
+            (entries) => {
+                for (const entry of entries) {
+                    if (!entry.isIntersecting) continue;
+                    const el = entry.target;
+                    const msgId = el?.dataset?.id;
+                    const sender = el?.dataset?.sender;
+
+                    // Only mark incoming messages as read by the current user.
+                    if (!msgId || sender === state.user) continue;
+
+                    handlers.queueMarkRead(msgId);
+                    state.readObserver?.unobserve(el);
+                }
+            },
+            // Mark as "read" when it's even partially visible.
+            // On small/mobile screens threshold too high often prevents receipts.
+            { root: DOM.messages, threshold: 0.05, rootMargin: "0px 0px -5% 0px" }
+        );
+    },
+
+    teardownReadObserver() {
+        if (state.readObserver) state.readObserver.disconnect();
+        state.readObserver = null;
+    },
+
+    observeIncomingMessage(el) {
+        if (!state.readObserver || !el) return;
+        if (el.dataset?.sender === state.user) return;
+        state.readObserver.observe(el);
+    },
+
+    shouldAutoMarkReadNow() {
+        // If chat screen is visible, mark incoming messages as read.
+        // (Mobile viewport/scroll heuristics are unreliable; keep it deterministic.)
+        if (!state.user) return false;
+        if (document.visibilityState !== 'visible') return false;
+        if (!DOM.chatScreen || DOM.chatScreen.classList.contains('hidden')) return false;
+        return true;
+    },
+
+    collectUnreadIncomingIds() {
+        if (!state.user) return [];
+        const ids = [];
+        for (const [id, msg] of state.messageMap.entries()) {
+            if (!msg || msg.sender === state.user) continue;
+            const readBy = Array.isArray(msg.readBy) ? msg.readBy : [];
+            if (!readBy.includes(state.user)) ids.push(id);
+        }
+        return ids;
+    },
+
+    autoMarkReadIfAppropriate() {
+        if (!handlers.shouldAutoMarkReadNow()) return;
+        const ids = handlers.collectUnreadIncomingIds();
+        ids.forEach((id) => handlers.queueMarkRead(id));
+        // Flush quickly so sender sees double-check fast.
+        if (ids.length) setTimeout(() => handlers.flushReadQueue(), 20);
+    },
+
+    queueMarkRead(id) {
+        if (!state.user || !id) return;
+        state.readPendingIds.add(String(id));
+
+        if (state.readFlushTimer) return;
+        state.readFlushTimer = setTimeout(() => handlers.flushReadQueue(), 250);
+    },
+
+    async flushReadQueue() {
+        if (!state.user) return;
+        const ids = [...state.readPendingIds];
+        state.readPendingIds.clear();
+        state.readFlushTimer = null;
+
+        if (ids.length === 0) return;
+        try {
+            await api.markRead(ids);
+        } catch (_err) {
+            // Best-effort: read receipts are UX only.
+        }
     },
 
     setReply(msg) {
@@ -440,21 +689,89 @@ const handlers = {
             DOM.replyBar.classList.add('hidden');
         }
     },
+
+    setEditById(id) {
+        const msg = state.messageMap.get(id);
+        if (!msg || msg.sender !== state.user || msg.type !== 'text') return;
+
+        state.editingMessageId = id;
+        if (DOM.editBarText) DOM.editBarText.textContent = String(msg.text || '').slice(0, 80);
+        DOM.editBar?.classList.remove('hidden');
+        DOM.messageInput.value = String(msg.text || '');
+        DOM.messageInput.focus();
+        ui.toggleSendBtn();
+    },
+
+    clearEdit() {
+        state.editingMessageId = null;
+        if (DOM.editBarText) DOM.editBarText.textContent = '';
+        DOM.editBar?.classList.add('hidden');
+    },
     
     async sendText() {
         const text = DOM.messageInput.value.trim();
         if (!text) return;
         
         try {
-            await api.sendText(text, state.replyTo);
+            if (state.editingMessageId) {
+                const { message } = await api.editText(state.editingMessageId, text);
+                state.messageMap.set(message.id, message);
+                ui.updateMessageText(message);
+                handlers.clearEdit();
+                utils.banner('ویرایش شد');
+            } else {
+                await api.sendText(text, state.replyTo);
+                utils.banner('ارسال شد');
+            }
             DOM.messageInput.value = '';
             DOM.messageInput.style.height = 'auto';
             ui.toggleSendBtn();
             handlers.clearReply();
-            utils.banner('ارسال شد');
         } catch (err) {
             utils.toast(err.message);
         }
+    },
+
+    closeReactionPicker() {
+        if (state.reactionPicker) {
+            state.reactionPicker.remove();
+            state.reactionPicker = null;
+            state.reactionPickerMessageId = null;
+        }
+    },
+
+    openReactionPicker(messageId, anchorEl) {
+        handlers.closeReactionPicker();
+        if (!messageId) return;
+
+        const picker = document.createElement('div');
+        picker.className = 'reaction-picker';
+        picker.innerHTML = REACTIONS.map((e) => `<button class="reaction-item" type="button" data-react-emoji="${utils.escape(e)}">${e}</button>`).join('');
+        document.body.appendChild(picker);
+
+        const rect = anchorEl?.getBoundingClientRect?.() || { left: window.innerWidth / 2, top: window.innerHeight / 2, width: 0, height: 0 };
+        const left = Math.min(Math.max(10, rect.left + rect.width / 2 - picker.offsetWidth / 2), window.innerWidth - picker.offsetWidth - 10);
+        const top = Math.min(Math.max(10, rect.top - picker.offsetHeight - 10), window.innerHeight - picker.offsetHeight - 10);
+        picker.style.left = `${left}px`;
+        picker.style.top = `${top}px`;
+
+        picker.onclick = async (ev) => {
+            const btn = ev.target.closest('[data-react-emoji]');
+            if (!btn) return;
+            const emoji = btn.dataset.reactEmoji;
+            try {
+                const { message } = await api.toggleReaction(messageId, emoji);
+                state.messageMap.set(message.id, message);
+                ui.updateMessageReactions(message);
+            } catch (err) {
+                utils.toast(err.message);
+            } finally {
+                handlers.closeReactionPicker();
+            }
+        };
+
+        state.reactionPicker = picker;
+        state.reactionPickerMessageId = messageId;
     },
     
     async sendImage() {
@@ -704,7 +1021,7 @@ const realtime = {
     connect() {
         if (state.eventSource) state.eventSource.close();
 
-        state.eventSource = new EventSource('/api/events');
+        state.eventSource = new EventSource(`/api/events?username=${encodeURIComponent(state.user)}`);
         state.eventSource.onopen = () => {
             state.reconnectAttempts = 0;
             if (state.reconnectTimer) {
@@ -717,6 +1034,10 @@ const realtime = {
                 const msg = JSON.parse(e.data);
                 ui.addMessage(msg);
                 notify.show(msg);
+                // Fallback for mobile: if user is viewing chat, mark incoming as read immediately.
+                if (msg?.sender && msg.sender !== state.user) {
+                    handlers.autoMarkReadIfAppropriate();
+                }
             } catch {}
         });
 
@@ -724,6 +1045,28 @@ const realtime = {
             try {
                 const payload = JSON.parse(e.data);
                 handlers.handlePresenceUpdate(payload);
+            } catch {}
+        });
+
+        state.eventSource.addEventListener('message:read', (e) => {
+            try {
+                const payload = JSON.parse(e.data);
+                const updated = payload?.messages || [];
+                updated.forEach((msg) => {
+                    if (!msg?.id) return;
+                    state.messageMap.set(msg.id, msg);
+                    ui.updateMessageReadReceipt(msg);
+                });
+            } catch {}
+        });
+
+        state.eventSource.addEventListener('message:update', (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                if (!msg?.id) return;
+                state.messageMap.set(msg.id, msg);
+                ui.updateMessageText(msg);
+                ui.updateMessageReactions(msg);
             } catch {}
         });
         state.eventSource.onerror = () => {
@@ -751,6 +1094,10 @@ const init = {
         
         ui.setHeader();
         ui.switchScreen(true);
+        state.readPendingIds.clear();
+        handlers.setupReadObserver();
+        handlers.startReadSyncTicker();
+
         notify.init();
         ui.updatePresence(false, null);
         handlers.syncPresence();
@@ -759,6 +1106,9 @@ const init = {
         const { messages } = await api.getMessages();
         ui.renderMessages(messages);
         realtime.connect();
+
+        // On first load, when chat is open, mark incoming messages as read.
+        setTimeout(() => handlers.autoMarkReadIfAppropriate(), 60);
         
         DOM.messageInput.focus();
     },
@@ -773,13 +1123,7 @@ const init = {
         if (!saved || !state.users.includes(saved)) return;
         
         try {
-            const me = await api.me();
-            if (me.username) {
-                await init.chat(me.username);
-            } else {
-                await api.login(saved);
-                await init.chat(saved);
-            }
+            await init.chat(saved);
         } catch {
             localStorage.removeItem(CONFIG.STORAGE_KEY);
         }
@@ -793,6 +1137,7 @@ const init = {
         DOM.voiceDelete.onclick = handlers.deleteRecord;
         DOM.voiceSend.onclick = () => state.recorder?.stop();
         DOM.replyCancel.onclick = handlers.clearReply;
+        DOM.editCancel.onclick = () => handlers.clearEdit();
         DOM.emojiBtn.onclick = handlers.showEmoji;
         DOM.emojiClose.onclick = () => DOM.emojiOverlay.classList.add('hidden');
         DOM.emojiOverlay.onclick = (e) => { if (e.target === DOM.emojiOverlay) DOM.emojiOverlay.classList.add('hidden'); };
@@ -849,6 +1194,19 @@ const init = {
                 return;
             }
 
+            const editBtn = e.target.closest('[data-edit-id]');
+            if (editBtn) {
+                handlers.setEditById(editBtn.dataset.editId);
+                return;
+            }
+
+            const reactBtn = e.target.closest('[data-react-id]');
+            if (reactBtn) {
+                const id = reactBtn.dataset.reactId;
+                handlers.openReactionPicker(id, reactBtn);
+                return;
+            }
+
             const voiceBtn = e.target.closest('[data-play-voice]');
             if (voiceBtn) {
                 handlers.playVoice(voiceBtn);
@@ -859,10 +1217,20 @@ const init = {
                 window.open(image.src, '_blank', 'noopener,noreferrer');
                 return;
             }
+            // Clicking elsewhere closes reaction picker.
+            if (state.reactionPicker && !e.target.closest('.reaction-picker')) {
+                handlers.closeReactionPicker();
+            }
             if (!DOM.attachMenu.contains(e.target) && !DOM.attachBtn.contains(e.target)) {
                 DOM.attachMenu.classList.add('hidden');
             }
         };
+
+        // Mark as read when user scrolls through messages.
+        DOM.messages?.addEventListener('scroll', () => {
+            if (!state.user) return;
+            handlers.autoMarkReadIfAppropriate();
+        }, { passive: true });
         
         const presenceFromVisibility = () => handlers.getMyActive();
 
@@ -871,12 +1239,14 @@ const init = {
             handlers.sendPresence(presenceFromVisibility());
             handlers.syncPresence();
             if (!document.hidden) realtime.connect();
+            if (!document.hidden) handlers.autoMarkReadIfAppropriate();
         });
 
         window.addEventListener('focus', () => {
             if (!state.user) return;
             handlers.sendPresence(true);
             handlers.syncPresence();
+            handlers.autoMarkReadIfAppropriate();
         });
 
         window.addEventListener('blur', () => {

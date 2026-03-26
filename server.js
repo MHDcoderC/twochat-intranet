@@ -251,13 +251,31 @@ const sessionMiddleware = session({
 app.use(sessionMiddleware);
 
 function requireAuth(req, res, next) {
-  if (!req.session || !req.session.username) {
+  const sessionUsername = req.session?.username;
+  const queryUsernameRaw = typeof req.query?.username === "string" ? req.query.username : "";
+  const queryUsername = queryUsernameRaw.trim();
+
+  const username =
+    sessionUsername && ALLOWED_USERS.includes(sessionUsername)
+      ? sessionUsername
+      : ALLOWED_USERS.includes(queryUsername)
+        ? queryUsername
+        : null;
+
+  if (!username) {
     return res.status(401).json({ error: "Unauthorized" });
   }
+
+  // IMPORTANT: do not mutate session username.
+  // If both users open the app in different tabs on the same browser, they share cookies.
+  // Mutating the session makes identity "flip" between users and breaks ownership checks.
+  req.authUsername = username;
+
   return next();
 }
 
-app.use("/uploads", requireAuth, express.static(UPLOAD_DIR, { index: false }));
+// Media files can be fetched without auth (URLs include random filenames).
+app.use("/uploads", express.static(UPLOAD_DIR, { index: false }));
 app.use("/stickers", express.static(path.join(__dirname, "public", "stickers"), { index: false }));
 app.use(express.static(path.join(__dirname, "public"), { index: false }));
 
@@ -304,12 +322,60 @@ app.post("/api/messages", requireAuth, async (req, res) => {
     id: crypto.randomUUID(),
     type: "text",
     text,
-    sender: req.session.username,
+    sender: req.authUsername,
     createdAt: new Date().toISOString(),
     replyTo,
+    readBy: [],
+    reactions: {},
   };
   await appendMessage(message);
   res.status(201).json({ message });
+});
+
+app.patch("/api/messages/:id", requireAuth, async (req, res) => {
+  const id = String(req.params?.id || "").trim();
+  if (!id) return res.status(400).json({ error: "id is required." });
+
+  const nextText = String(req.body?.text || "").replace(/\r\n/g, "\n").trim();
+  if (!nextText) return res.status(400).json({ error: "Text is required." });
+  if (nextText.length > 2000) return res.status(400).json({ error: "Message too long." });
+
+  const username = req.authUsername;
+  let updated = null;
+  let failure = "not_found";
+
+  messageWriteQueue = messageWriteQueue.then(async () => {
+    const messages = await readMessages();
+    const msg = messages.find((m) => m && m.id === id);
+    if (!msg) {
+      failure = "not_found";
+      return;
+    }
+    if (msg.type !== "text") {
+      failure = "not_text";
+      return;
+    }
+    if (msg.sender !== username) {
+      failure = "not_owner";
+      return;
+    }
+
+    msg.text = nextText;
+    msg.editedAt = new Date().toISOString();
+    updated = { ...msg };
+
+    const pruned = await pruneMessages(messages);
+    await writeMessages(pruned);
+    broadcast("message:update", updated);
+  });
+
+  await messageWriteQueue;
+  if (!updated) {
+    if (failure === "not_owner") return res.status(403).json({ error: "You can only edit your own messages." });
+    if (failure === "not_text") return res.status(415).json({ error: "Only text messages are editable." });
+    return res.status(404).json({ error: "Message not found." });
+  }
+  return res.json({ message: updated });
 });
 
 app.post("/api/media", requireAuth, upload.single("file"), async (req, res) => {
@@ -350,9 +416,11 @@ app.post("/api/media", requireAuth, upload.single("file"), async (req, res) => {
     id: crypto.randomUUID(),
     type: mediaType,
     text: "",
-    sender: req.session.username,
+    sender: req.authUsername,
     createdAt: new Date().toISOString(),
     replyTo,
+    readBy: [],
+    reactions: {},
     file: {
       path: path.join("uploads", storedName).replace(/\\/g, "/"),
       url: `/uploads/${encodeURIComponent(storedName)}`,
@@ -366,9 +434,60 @@ app.post("/api/media", requireAuth, upload.single("file"), async (req, res) => {
   res.status(201).json({ message });
 });
 
+const ALLOWED_REACTIONS = new Set(["💕", "❤️", "😍", "👌"]);
+
+app.post("/api/messages/:id/reactions", requireAuth, async (req, res) => {
+  const id = String(req.params?.id || "").trim();
+  if (!id) return res.status(400).json({ error: "id is required." });
+
+  const emoji = String(req.body?.emoji || "").trim();
+  if (!ALLOWED_REACTIONS.has(emoji)) return res.status(400).json({ error: "Unsupported reaction." });
+
+  const username = req.authUsername;
+  let updated = null;
+  let failure = "not_found";
+
+  messageWriteQueue = messageWriteQueue.then(async () => {
+    const messages = await readMessages();
+    const msg = messages.find((m) => m && m.id === id);
+    if (!msg) {
+      failure = "not_found";
+      return;
+    }
+
+    if (!msg.reactions || typeof msg.reactions !== "object") msg.reactions = {};
+    const current = Array.isArray(msg.reactions[emoji]) ? msg.reactions[emoji] : [];
+
+    if (current.includes(username)) {
+      msg.reactions[emoji] = current.filter((u) => u !== username);
+    } else {
+      msg.reactions[emoji] = [...current, username];
+    }
+
+    // Cleanup empty arrays to keep storage tidy.
+    if (Array.isArray(msg.reactions[emoji]) && msg.reactions[emoji].length === 0) {
+      delete msg.reactions[emoji];
+    }
+
+    updated = { ...msg };
+
+    const pruned = await pruneMessages(messages);
+    await writeMessages(pruned);
+    broadcast("message:update", updated);
+  });
+
+  await messageWriteQueue;
+  if (!updated) {
+    if (failure === "not_found") return res.status(404).json({ error: "Message not found." });
+    return res.status(400).json({ error: "Unable to react." });
+  }
+
+  return res.json({ message: updated });
+});
+
 app.post("/api/presence", requireAuth, async (req, res) => {
   const active = Boolean(req.body?.active);
-  const username = req.session.username;
+  const username = req.authUsername;
 
   const next = {
     active,
@@ -381,6 +500,40 @@ app.post("/api/presence", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.post("/api/messages/read", requireAuth, async (req, res) => {
+  const rawIds = req.body?.ids;
+  if (!Array.isArray(rawIds) || rawIds.length === 0) {
+    return res.status(400).json({ error: "ids is required." });
+  }
+
+  const username = req.authUsername;
+  const ids = rawIds.map((id) => String(id)).slice(0, 200);
+  const idSet = new Set(ids);
+
+  const updatedMessages = [];
+  messageWriteQueue = messageWriteQueue.then(async () => {
+    const messages = await readMessages();
+    for (const msg of messages) {
+      if (!msg || !msg.id || !idSet.has(msg.id)) continue;
+
+      if (!Array.isArray(msg.readBy)) msg.readBy = [];
+      if (!msg.readBy.includes(username)) {
+        msg.readBy.push(username);
+        updatedMessages.push({ ...msg, readBy: msg.readBy });
+      }
+    }
+
+    if (updatedMessages.length === 0) return;
+
+    const pruned = await pruneMessages(messages);
+    await writeMessages(pruned);
+    broadcast("message:read", { messages: updatedMessages });
+  });
+
+  await messageWriteQueue;
+  res.json({ ok: true });
+});
+
 app.get("/api/events", requireAuth, (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -389,17 +542,29 @@ app.get("/api/events", requireAuth, (req, res) => {
 
   res.write(`event: hello\ndata: ${JSON.stringify({ ok: true })}\n\n`);
   sseClients.add(res);
-  sseClientUser.set(res, req.session.username);
+  sseClientUser.set(res, req.authUsername);
 
   // Default presence until the client syncs (it will also adjust on visibility changes).
-  if (!presence.has(req.session.username)) {
-    presence.set(req.session.username, { active: true, lastActiveAt: Date.now() });
+  if (!presence.has(req.authUsername)) {
+    presence.set(req.authUsername, { active: true, lastActiveAt: Date.now() });
     broadcast("presence:update", {
-      username: req.session.username,
+      username: req.authUsername,
       active: true,
       lastActiveAt: Date.now(),
     });
   }
+
+  // Send a snapshot so a user who connects later immediately sees current presence.
+  for (const [username, data] of presence.entries()) {
+    res.write(
+      `event: presence:update\ndata: ${JSON.stringify({
+        username,
+        active: Boolean(data?.active),
+        lastActiveAt: data?.lastActiveAt || Date.now(),
+      })}\n\n`
+    );
+  }
+
   const heartbeat = setInterval(() => {
     try {
       res.write(`event: ping\ndata: ${Date.now()}\n\n`);
@@ -422,7 +587,7 @@ app.get("/api/events", requireAuth, (req, res) => {
   });
 });
 
-const PRESENCE_TTL_MS = Number(process.env.PRESENCE_TTL_MS || 60000);
+const PRESENCE_TTL_MS = Number(process.env.PRESENCE_TTL_MS || 20000);
 // If a client stops sending presence updates (tab suspended, browser throttling, etc.),
 // mark them offline after TTL to keep the UI accurate.
 setInterval(() => {
@@ -434,7 +599,7 @@ setInterval(() => {
       broadcast("presence:update", { username, active: false, lastActiveAt: data.lastActiveAt });
     }
   }
-}, 15000).unref?.();
+}, 5000).unref?.();
 
 app.get("/health", (_req, res) => {
   res.json({
