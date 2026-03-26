@@ -10,13 +10,13 @@ const crypto = require("crypto");
 const sharp = require("sharp");
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 5730);
 const SESSION_SECRET = process.env.SESSION_SECRET || "change-this-in-production";
 const MAX_MESSAGES = Number(process.env.MAX_MESSAGES || 1000);
 const TRUST_PROXY = String(process.env.TRUST_PROXY || "false").toLowerCase() === "true";
 const MESSAGE_FILE = path.join(__dirname, "data", "messages.json");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
-const ALLOWED_USERS = (process.env.ALLOWED_USERS || "maede,mohammad")
+const ALLOWED_USERS = (process.env.ALLOWED_USERS || "user1,user2")
   .split(",")
   .map((u) => u.trim())
   .filter(Boolean)

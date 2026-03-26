@@ -25,15 +25,15 @@ cp .env.example .env
 npm start
 ```
 
-سرویس به طور پیش‌فرض روی `http://localhost:3000` اجرا می‌شود.
+سرویس به طور پیش‌فرض روی `http://localhost:5730` اجرا می‌شود.
 
 ## تنظیمات محیطی
 
 فایل `.env`:
 
 ```env
-PORT=3000
-ALLOWED_USERS=maede,mohammad
+PORT=5730
+ALLOWED_USERS=user1,user2
 SESSION_SECRET=replace-with-a-long-random-secret
 MAX_MESSAGES=1000
 NODE_ENV=production
@@ -43,6 +43,18 @@ TRUST_PROXY=false
 - `ALLOWED_USERS`: دقیقا ۲ نام کاربری، با کاما جدا شود.
 - `SESSION_SECRET`: مقدار طولانی و تصادفی (حداقل 32 کاراکتر).
 - `TRUST_PROXY=true`: فقط زمانی فعال شود که پشت reverse proxy هستید.
+
+نمونه استقرار روی سرور شما:
+
+```env
+PORT=5730
+ALLOWED_USERS=user1,user2
+NODE_ENV=production
+TRUST_PROXY=true
+```
+
+نمونه آدرس دسترسی سایت:
+`https://chmm.mmdcode.top/`
 
 ## راهنمای استقرار روی سرور داخلی
 
