@@ -51,6 +51,7 @@ const state = {
     presenceDebounceTimer: null,
     bannerTimer: null,
     presenceTickerTimer: null,
+    swRegistration: null,
     readSyncTimer: null
     ,
     editingMessageId: null
@@ -164,6 +165,54 @@ const utils = {
     normalize: (str) => str?.trim().replace(/\s+/g, '') || ''
 };
 
+const pwa = {
+    async init() {
+        if (!('serviceWorker' in navigator)) return;
+        try {
+            state.swRegistration = await navigator.serviceWorker.register('/sw.js');
+        } catch {}
+    },
+
+    async showMessageNotification(sender, body) {
+        try {
+            if (state.swRegistration?.showNotification) {
+                await state.swRegistration.showNotification(sender, {
+                    body,
+                    tag: 'chat-new-message',
+                    renotify: true,
+                    badge: '/icons/chat-icon.svg',
+                    icon: '/icons/chat-icon.svg'
+                });
+                return;
+            }
+        } catch {}
+
+        if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification(sender, { body, tag: 'chat-new-message' });
+        }
+    },
+
+    async updateUnreadBadge() {
+        if (!('setAppBadge' in navigator) && !('clearAppBadge' in navigator)) return;
+        if (!state.user) return;
+
+        let unread = 0;
+        for (const msg of state.messageMap.values()) {
+            if (!msg || msg.sender === state.user) continue;
+            const readBy = Array.isArray(msg.readBy) ? msg.readBy : [];
+            if (!readBy.includes(state.user)) unread += 1;
+        }
+
+        try {
+            if (unread > 0 && 'setAppBadge' in navigator) {
+                await navigator.setAppBadge(unread);
+            } else if ('clearAppBadge' in navigator) {
+                await navigator.clearAppBadge();
+            }
+        } catch {}
+    }
+};
+
 // ==================== API ====================
 const api = {
     async request(path, options = {}) {
@@ -239,7 +288,7 @@ const notify = {
         utils.toast(`${msg.sender}: ${text}`);
         
         if (document.hidden && Notification.permission === 'granted') {
-            new Notification(msg.sender, { body: text, tag: 'chat' });
+            pwa.showMessageNotification(msg.sender, text);
         }
     }
 };
@@ -408,6 +457,7 @@ const ui = {
         [...msgs].sort((a,b) => new Date(a.createdAt) - new Date(b.createdAt))
                  .forEach(m => ui.addMessage(m, false));
         DOM.messages.scrollTop = DOM.messages.scrollHeight;
+        pwa.updateUnreadBadge();
     },
 
     scrollToMessage(messageId) {
@@ -808,6 +858,7 @@ const handlers = {
         } catch (_err) {
             // Best-effort: read receipts are UX only.
         }
+        pwa.updateUnreadBadge();
     },
 
     setReply(msg) {
@@ -1189,6 +1240,7 @@ const realtime = {
                 const msg = JSON.parse(e.data);
                 ui.addMessage(msg);
                 notify.show(msg);
+                pwa.updateUnreadBadge();
                 // Fallback for mobile: if user is viewing chat, mark incoming as read immediately.
                 if (msg?.sender && msg.sender !== state.user) {
                     handlers.autoMarkReadIfAppropriate();
@@ -1219,6 +1271,7 @@ const realtime = {
                     state.messageMap.set(msg.id, msg);
                     ui.updateMessageReadReceipt(msg);
                 });
+                pwa.updateUnreadBadge();
             } catch {}
         });
 
@@ -1412,6 +1465,7 @@ const init = {
             handlers.syncPresence();
             if (!document.hidden) realtime.connect();
             if (!document.hidden) handlers.autoMarkReadIfAppropriate();
+            pwa.updateUnreadBadge();
         });
 
         window.addEventListener('focus', () => {
@@ -1436,6 +1490,7 @@ const init = {
     },
     
     async start() {
+        await pwa.init();
         await init.config();
         init.restore();
         init.events();
