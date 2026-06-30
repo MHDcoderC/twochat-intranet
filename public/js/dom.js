@@ -1,0 +1,25 @@
+const $ = (id) => document.getElementById(id);
+
+export const DOM = {
+    loginScreen: $('loginScreen'), loginForm: $('loginForm'), username: $('username'),
+    chatScreen: $('chatScreen'), chatTitle: $('chatTitle'), userInitial: $('userInitial'),
+    messages: $('messages'), messageInput: $('messageInput'),
+    sendBtn: $('sendBtn'), voiceBtn: $('voiceBtn'),
+    emojiBtn: $('emojiBtn'), emojiOverlay: $('emojiOverlay'),
+    emojiClose: $('emojiClose'), emojiPicker: $('emojiPicker'),
+    attachBtn: $('attachBtn'), attachMenu: $('attachMenu'),
+    attachPhoto: $('attachPhoto'), attachSticker: $('attachSticker'),
+    stickerOverlay: $('stickerOverlay'), stickerGrid: $('stickerGrid'), stickerClose: $('stickerClose'),
+    imagePreview: $('imagePreview'), previewThumb: $('previewThumb'),
+    previewName: $('previewName'), previewSize: $('previewSize'),
+    previewSend: $('previewSend'), previewCancel: $('previewCancel'),
+    voiceOverlay: $('voiceOverlay'), voiceTimer: $('voiceTimer'),
+    voiceDelete: $('voiceDelete'), voiceSend: $('voiceSend'),
+    logoutBtn: $('logoutBtn'), fileInput: $('fileInput'),
+    replyBar: $('replyBar'), replyBarText: $('replyBarText'), replyCancel: $('replyCancel'),
+    editBar: $('editBar'), editBarText: $('editBarText'), editCancel: $('editCancel'),
+    banner: $('banner'), presenceDot: document.querySelector('.online-dot'),
+    presenceText: $('presenceText'), toast: $('toast'),
+    archiveBtn: $('archiveBtn'), archiveOverlay: $('archiveOverlay'),
+    archiveClose: $('archiveClose'), archiveImages: $('archiveImages'), archiveVoices: $('archiveVoices'),
+};

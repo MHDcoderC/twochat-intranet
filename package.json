@@ -1,14 +1,15 @@
 {
-  "name": "chat",
+  "name": "twochat-intranet",
   "version": "1.0.0",
-  "description": "Simple two-user messenger with text/image/voice",
+  "description": "Lightweight two-user messenger for intranet/LAN with text, image, and voice messages",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
-  "keywords": [],
+  "keywords": ["chat", "intranet", "messenger", "two-user"],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "dotenv": "^17.3.1",
     "express": "^5.2.1",

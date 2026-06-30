@@ -1,0 +1,16 @@
+export const state = {
+    user: null, other: null, users: [], messages: [],
+    rendered: new Set(), messageElMap: new Map(),
+    recording: false, recorder: null, recordStart: 0, recordTimer: null,
+    stream: null, pendingImage: null, stickers: null, emojiPicker: null,
+    eventSource: null, reconnectTimer: null, reconnectAttempts: 0,
+    replyTo: null, messageMap: new Map(),
+    readObserver: null, readPendingIds: new Set(), readFlushTimer: null,
+    otherActive: false, otherLastActiveAt: null, otherTyping: false,
+    typingStopTimer: null, typingDebounceTimer: null, lastTypingSentAt: 0,
+    presenceLastSent: null, presenceDebounceTimer: null,
+    bannerTimer: null, presenceTickerTimer: null, swRegistration: null,
+    readSyncTimer: null, editingMessageId: null,
+    reactionPicker: null, reactionPickerMessageId: null, lastDayKey: null,
+    chunks: [], discardRecord: false,
+};
